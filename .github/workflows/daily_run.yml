@@ -2,17 +2,20 @@ name: Daily Paper Trading
 
 on:
   schedule:
-    # Esegue ogni giorno alle 00:05 UTC (circa 01:05 o 02:05 in Italia)
     - cron: '5 0 * * *'
-  workflow_dispatch:  # Permette esecuzione manuale
+  workflow_dispatch:
 
 jobs:
   track:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # ✅ IMPORTANTE: Scarica tutta la storia
     
     - name: Setup Python
       uses: actions/setup-python@v4
@@ -29,8 +32,9 @@ jobs:
     
     - name: Commit and push results
       run: |
-        git config --global user.name 'github-actions'
-        git config --global user.email 'github-actions@github.com'
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
         git add paper_trading_log.csv
-        git commit -m "Update paper trading log [skip ci]" || echo "No changes"
-        git push
+        git diff --quiet && git diff --staged || (git commit -m "Update paper trading log [skip ci]" && git push)
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
