@@ -13,12 +13,12 @@ jobs:
     
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0  # Scarica tutta la storia Git
     
     - name: Setup Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
     
@@ -30,22 +30,24 @@ jobs:
     - name: Run Paper Trading
       run: python paper_trading.py
     
-    - name: Commit and push results
+    - name: Configure Git
       run: |
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-        
-        # Forza pull prima di commit per avere l'ultima versione
+    
+    - name: Pull latest changes
+      run: |
         git pull origin main --rebase || true
-        
+      continue-on-error: true
+    
+    - name: Commit and push results
+      run: |
         git add paper_trading_log.csv
-        
-        # Verifica se ci sono cambiamenti
-        if git diff --staged --quiet; then
-          echo "Nessun cambiamento da committare"
+        if ! git diff --staged --quiet; then
+          git commit -m "Update paper trading log $(date +%Y-%m-%d) [skip ci]"
+          git push origin main
         else
-          git commit -m "Update paper trading log [skip ci]"
-          git push
+          echo "No changes to commit"
         fi
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
