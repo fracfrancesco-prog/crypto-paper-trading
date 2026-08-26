@@ -30,30 +30,39 @@ ALLOCAZIONE = {
 }
 
 # ==========================================
-# 1. SCARICA DATI DA BINANCE
+# 1. SCARICA DATI DA KRAKEN
 # ==========================================
 def fetch_data():
-    print("📥 Download dati da Binance...")
-    exchange = ccxt.binance({'enableRateLimit': True})
+    """Scarica dati daily da Kraken"""
+    print("📥 Download dati da Kraken...")
+    exchange = ccxt.kraken({'enableRateLimit': True})
     
     prices = {}
     for symbol in ASSETS:
-        # Scarica 400 candele daily per avere abbastanza storia
-        bars = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=400)
-        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).normalize()
-        df.set_index('timestamp', inplace=True)
-        prices[symbol.replace('/', '')] = df['close']
+        try:
+            # Kraken ha un limite di 720 candele
+            bars = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=720)
+            df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).normalize()
+            df.set_index('timestamp', inplace=True)
+            prices[symbol.replace('/', '')] = df['close']
+            print(f"   ✅ Scaricati {len(df)} giorni per {symbol}")
+        except Exception as e:
+            print(f"   ⚠️ Errore per {symbol}: {e}")
+    
+    if not prices:
+        raise Exception("Nessun dato scaricato da Kraken")
     
     close_daily = pd.DataFrame(prices)
     close_daily.dropna(inplace=True)
-    print(f"   ✅ Scaricati {len(close_daily)} giorni di dati")
+    print(f"   ✅ Totale: {len(close_daily)} giorni di dati")
     return close_daily
 
 # ==========================================
 # 2. CALCOLA REGIME E PESI
 # ==========================================
 def calculate_weights(close_daily):
+    """Calcola regime e pesi target"""
     returns_daily = close_daily.pct_change(fill_method=None)
     market_returns = returns_daily.mean(axis=1, skipna=True)
     
@@ -118,6 +127,7 @@ def calculate_weights(close_daily):
 # 3. SALVA RISULTATI
 # ==========================================
 def save_results(weights, regime, drawdown):
+    """Salva i risultati nel CSV"""
     today = datetime.now().strftime('%Y-%m-%d')
     
     # Prepara la riga da salvare
