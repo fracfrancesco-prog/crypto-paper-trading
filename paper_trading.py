@@ -44,14 +44,14 @@ def fetch_data():
             bars = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=720)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
-            # ✅ CORREZIONE: .dt.normalize() è il modo corretto per le Series in pandas
+            # CORREZIONE: .dt.normalize() è il modo corretto per le Series in pandas
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.normalize()
             
             df.set_index('timestamp', inplace=True)
             prices[symbol.replace('/', '')] = df['close']
             print(f"   ✅ Scaricati {len(df)} giorni per {symbol}")
         except Exception as e:
-            print(f"   ⚠️ Errore per {symbol}: {e}")
+            print(f"   ️ Errore per {symbol}: {e}")
     
     if not prices:
         raise Exception("Nessun dato scaricato da Kraken")
