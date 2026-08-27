@@ -43,19 +43,17 @@ def fetch_data():
             # Kraken ha un limite di 720 candele
             bars = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=720)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            
             # CORREZIONE: .dt.normalize() è il modo corretto per le Series in pandas
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.normalize()
-            
             df.set_index('timestamp', inplace=True)
             prices[symbol.replace('/', '')] = df['close']
             print(f"   ✅ Scaricati {len(df)} giorni per {symbol}")
         except Exception as e:
-            print(f"   ️ Errore per {symbol}: {e}")
-    
+            print(f"   ❌ Errore per {symbol}: {e}")
+            
     if not prices:
         raise Exception("Nessun dato scaricato da Kraken")
-    
+        
     close_daily = pd.DataFrame(prices)
     close_daily.dropna(inplace=True)
     print(f"   ✅ Totale: {len(close_daily)} giorni di dati")
@@ -87,7 +85,7 @@ def calculate_weights(close_daily):
         regime = 'EXPANSION'
     elif is_contraction.iloc[-1]:
         regime = 'CONTRACTION'
-    
+        
     # --- TSMOM ---
     returns_30d = close_daily.pct_change(30, fill_method=None)
     raw_signal = (returns_30d.iloc[-1] > 0).astype(int)
@@ -96,6 +94,7 @@ def calculate_weights(close_daily):
     first_valid_price = close_daily.apply(lambda x: x.dropna().iloc[0])
     normalized_close = close_daily / first_valid_price
     market_index = normalized_close.mean(axis=1, skipna=True)
+    
     rolling_max = market_index.rolling(window=90, min_periods=1).max()
     drawdown = (market_index.iloc[-1] / rolling_max.iloc[-1]) - 1
     overlay = 0.5 if drawdown < -0.15 else 1.0
@@ -114,13 +113,13 @@ def calculate_weights(close_daily):
         tsmom_w = (raw_signal / raw_signal.sum()) * alloc['tsmom'] * overlay
         for i, asset in enumerate(ASSET_NAMES):
             weights[asset] += tsmom_w.iloc[i]
-    
+            
     # MR Weights
     if mr_signal.sum() > 0:
         mr_w = (mr_signal / mr_signal.sum()) * alloc['mr']
         for i, asset in enumerate(ASSET_NAMES):
             weights[asset] += mr_w.iloc[i]
-    
+            
     total_exposure = sum(weights.values())
     weights['CASH'] = max(0.0, 1.0 - total_exposure - alloc['funding'])
     
@@ -157,7 +156,7 @@ def save_results(weights, regime, drawdown):
         df_combined = pd.concat([df_existing, pd.DataFrame([row])], ignore_index=True)
     else:
         df_combined = pd.DataFrame([row])
-    
+        
     # Salva il CSV
     df_combined.to_csv(csv_file, index=False)
     print(f"   ✅ Salvato in {csv_file}")
