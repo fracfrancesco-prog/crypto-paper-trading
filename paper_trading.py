@@ -40,20 +40,18 @@ def fetch_data():
     prices = {}
     for symbol in ASSETS:
         try:
-            # Kraken ha un limite di 720 candele
             bars = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=720)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            # CORREZIONE: .dt.normalize() è il modo corretto per le Series in pandas
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.normalize()
             df.set_index('timestamp', inplace=True)
             prices[symbol.replace('/', '')] = df['close']
             print(f"   ✅ Scaricati {len(df)} giorni per {symbol}")
         except Exception as e:
             print(f"   ❌ Errore per {symbol}: {e}")
-            
+    
     if not prices:
         raise Exception("Nessun dato scaricato da Kraken")
-        
+    
     close_daily = pd.DataFrame(prices)
     close_daily.dropna(inplace=True)
     print(f"   ✅ Totale: {len(close_daily)} giorni di dati")
@@ -67,9 +65,9 @@ def calculate_weights(close_daily):
     returns_daily = close_daily.pct_change(fill_method=None)
     market_returns = returns_daily.mean(axis=1, skipna=True)
     
-    # --- REGIME DETECTOR (adattato per dati daily) ---
-    vol_short = market_returns.rolling(window=21).std()   # 21 giorni ≈ 1 mese
-    vol_long = market_returns.rolling(window=126).std()   # 126 giorni ≈ 6 mesi
+    # --- REGIME DETECTOR ---
+    vol_short = market_returns.rolling(window=21).std()
+    vol_long = market_returns.rolling(window=126).std()
     vol_ratio = vol_short / vol_long
     
     momentum = market_returns.rolling(window=21).sum()
@@ -85,7 +83,7 @@ def calculate_weights(close_daily):
         regime = 'EXPANSION'
     elif is_contraction.iloc[-1]:
         regime = 'CONTRACTION'
-        
+    
     # --- TSMOM ---
     returns_30d = close_daily.pct_change(30, fill_method=None)
     raw_signal = (returns_30d.iloc[-1] > 0).astype(int)
@@ -108,18 +106,16 @@ def calculate_weights(close_daily):
     alloc = ALLOCAZIONE[regime]
     weights = {asset: 0.0 for asset in ASSET_NAMES}
     
-    # TSMOM Weights
     if raw_signal.sum() > 0:
         tsmom_w = (raw_signal / raw_signal.sum()) * alloc['tsmom'] * overlay
         for i, asset in enumerate(ASSET_NAMES):
             weights[asset] += tsmom_w.iloc[i]
-            
-    # MR Weights
+    
     if mr_signal.sum() > 0:
         mr_w = (mr_signal / mr_signal.sum()) * alloc['mr']
         for i, asset in enumerate(ASSET_NAMES):
             weights[asset] += mr_w.iloc[i]
-            
+    
     total_exposure = sum(weights.values())
     weights['CASH'] = max(0.0, 1.0 - total_exposure - alloc['funding'])
     
@@ -132,7 +128,6 @@ def save_results(weights, regime, drawdown):
     """Salva i risultati nel CSV"""
     today = datetime.now().strftime('%Y-%m-%d')
     
-    # Prepara la riga da salvare
     row = {
         'date': today,
         'regime': regime,
@@ -146,22 +141,18 @@ def save_results(weights, regime, drawdown):
     
     csv_file = 'paper_trading_log.csv'
     
-    # Se il file esiste, leggi i dati precedenti
     if os.path.exists(csv_file):
         df_existing = pd.read_csv(csv_file)
-        # Evita duplicati (se lo script gira due volte nello stesso giorno)
         if today in df_existing['date'].values:
             print(f"   ⚠️ Dati per {today} già presenti, aggiornamento...")
             df_existing = df_existing[df_existing['date'] != today]
         df_combined = pd.concat([df_existing, pd.DataFrame([row])], ignore_index=True)
     else:
         df_combined = pd.DataFrame([row])
-        
-    # Salva il CSV
+    
     df_combined.to_csv(csv_file, index=False)
     print(f"   ✅ Salvato in {csv_file}")
     
-    # Stampa riepilogo
     print(f"\n📊 RISULTATI PER {today}:")
     print(f"   Regime: {regime}")
     print(f"   Drawdown: {drawdown:.2%}")
