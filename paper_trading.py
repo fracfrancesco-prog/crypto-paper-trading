@@ -2,10 +2,11 @@ import pandas as pd
 import numpy as np
 import ccxt
 import os
+import time
 from datetime import datetime
 
 print("="*60)
-print(" 🚀 PAPER TRADING TRACKER - Esecuzione Automatica")
+print(" 🚀 PAPER TRADING TRACKER - Esecuzione Automatica (Hourly Regime)")
 print("="*60)
 
 # ==========================================
@@ -14,12 +15,12 @@ print("="*60)
 ASSETS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT']
 ASSET_NAMES = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT']
 
-# Parametri Regime Detector
+# Parametri Regime Detector (Hourly)
 Z_THRESH = 2.0
 VOL_H = 1.4
 VOL_L = 0.7
 
-# Parametri Mean Reversion
+# Parametri Mean Reversion (Daily)
 MR_Z_THRESH = -2.5
 
 # Allocazione per Regime
@@ -30,11 +31,38 @@ ALLOCAZIONE = {
 }
 
 # ==========================================
-# 1. SCARICA DATI DA KRAKEN
+# 1. SCARICA DATI HOURLY (per Regime Detector)
 # ==========================================
-def fetch_data():
+def fetch_hourly_data(symbol):
+    """Scarica dati hourly da Kraken (circa 1000 ore per coprire finestra 720)"""
+    exchange = ccxt.kraken({'enableRateLimit': True})
+    all_bars = []
+    # Kraken limite 720, quindi facciamo un loop per averne ~1000
+    since = exchange.milliseconds() - (1000 * 3600 * 1000)
+    
+    while True:
+        bars = exchange.fetch_ohlcv(symbol, timeframe='1h', since=since, limit=720)
+        if not bars:
+            break
+        all_bars.extend(bars)
+        since = bars[-1][0] + 3600000
+        if len(all_bars) >= 1000:
+            break
+        time.sleep(0.5)
+        
+    df = pd.DataFrame(all_bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+    df.set_index('timestamp', inplace=True)
+    df = df[~df.index.duplicated(keep='last')]
+    df.sort_index(inplace=True)
+    return df['close'].tail(1000)
+
+# ==========================================
+# 2. SCARICA DATI DAILY (per TSMOM, Drawdown, MR)
+# ==========================================
+def fetch_daily_data():
     """Scarica dati daily da Kraken"""
-    print("📥 Download dati da Kraken...")
+    print("📥 Download dati daily da Kraken...")
     exchange = ccxt.kraken({'enableRateLimit': True})
     
     prices = {}
@@ -54,41 +82,69 @@ def fetch_data():
     
     close_daily = pd.DataFrame(prices)
     close_daily.dropna(inplace=True)
-    print(f"   ✅ Totale: {len(close_daily)} giorni di dati")
+    print(f"   ✅ Totale daily: {len(close_daily)} giorni")
     return close_daily
 
 # ==========================================
-# 2. CALCOLA REGIME E PESI
+# 3. CALCOLA REGIME (HOURLY) E PESI (DAILY)
 # ==========================================
-def calculate_weights(close_daily):
-    """Calcola regime e pesi target"""
+def calculate_weights(close_daily, close_hourly_dict):
+    """Calcola regime (hourly) e pesi target (daily)"""
+    
+    # --- REGIME DETECTOR (HOURLY) ---
+    print("📊 Calcolo Regime Detector (dati hourly)...")
+    regime_series_list = []
+    
+    for asset in ASSETS:
+        symbol_key = asset.replace('/', '')
+        if symbol_key not in close_hourly_dict:
+            continue
+            
+        close_h = close_hourly_dict[symbol_key]
+        returns_h = close_h.pct_change(fill_method=None)
+        
+        vol_short = returns_h.rolling(window=24).std()
+        vol_long = returns_h.rolling(window=168).std()
+        vol_ratio = vol_short / vol_long
+        
+        momentum = returns_h.rolling(window=24).sum()
+        mom_mean = momentum.rolling(window=720).mean()
+        mom_std = momentum.rolling(window=720).std().replace(0, np.nan)
+        z_score = (momentum - mom_mean) / mom_std
+        
+        is_expansion = (vol_ratio > VOL_H) & (z_score.abs() > Z_THRESH)
+        is_contraction = (vol_ratio < VOL_L) & (z_score.abs() < Z_THRESH)
+        
+        regime_h = pd.Series('NEUTRAL', index=returns_h.index)
+        regime_h.loc[is_expansion] = 'EXPANSION'
+        regime_h.loc[is_contraction] = 'CONTRACTION'
+        
+        # Resampling a daily (moda del giorno)
+        daily_reg = regime_h.resample('D').agg(
+            lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'NEUTRAL'
+        )
+        regime_series_list.append(daily_reg)
+    
+    # Media dei regimi (o prendiamo l'ultimo giorno comune)
+    if regime_series_list:
+        # Allineiamo gli indici e prendiamo la moda tra gli asset per ogni giorno
+        regime_df = pd.DataFrame(regime_series_list).T
+        # Prendiamo l'ultimo giorno completo
+        last_day_regime = regime_df.iloc[-1].mode().iloc[0]
+        regime = last_day_regime
+    else:
+        regime = 'NEUTRAL'
+        
+    print(f"   ✅ Regime giornaliero: {regime}")
+
+    # --- TSMOM, DRAWDOWN, MEAN REVERSION (DAILY) ---
     returns_daily = close_daily.pct_change(fill_method=None)
-    market_returns = returns_daily.mean(axis=1, skipna=True)
     
-    # --- REGIME DETECTOR ---
-    vol_short = market_returns.rolling(window=21).std()
-    vol_long = market_returns.rolling(window=126).std()
-    vol_ratio = vol_short / vol_long
-    
-    momentum = market_returns.rolling(window=21).sum()
-    mom_mean = momentum.rolling(window=126).mean()
-    mom_std = momentum.rolling(window=126).std().replace(0, np.nan)
-    z_score = (momentum - mom_mean) / mom_std
-    
-    is_expansion = (vol_ratio > VOL_H) & (z_score.abs() > Z_THRESH)
-    is_contraction = (vol_ratio < VOL_L) & (z_score.abs() < Z_THRESH)
-    
-    regime = 'NEUTRAL'
-    if is_expansion.iloc[-1]:
-        regime = 'EXPANSION'
-    elif is_contraction.iloc[-1]:
-        regime = 'CONTRACTION'
-    
-    # --- TSMOM ---
+    # TSMOM
     returns_30d = close_daily.pct_change(30, fill_method=None)
     raw_signal = (returns_30d.iloc[-1] > 0).astype(int)
     
-    # --- DRAWDOWN OVERLAY ---
+    # Drawdown Overlay
     first_valid_price = close_daily.apply(lambda x: x.dropna().iloc[0])
     normalized_close = close_daily / first_valid_price
     market_index = normalized_close.mean(axis=1, skipna=True)
@@ -97,7 +153,7 @@ def calculate_weights(close_daily):
     drawdown = (market_index.iloc[-1] / rolling_max.iloc[-1]) - 1
     overlay = 0.5 if drawdown < -0.15 else 1.0
     
-    # --- MEAN REVERSION ---
+    # Mean Reversion
     mr_zscore = (close_daily.iloc[-1] - close_daily.rolling(14).mean().iloc[-1]) / close_daily.rolling(14).std().iloc[-1]
     sma_50 = close_daily.rolling(50).mean().iloc[-1]
     mr_signal = ((mr_zscore < MR_Z_THRESH) & (close_daily.iloc[-1] > sma_50)).astype(int)
@@ -110,19 +166,19 @@ def calculate_weights(close_daily):
         tsmom_w = (raw_signal / raw_signal.sum()) * alloc['tsmom'] * overlay
         for i, asset in enumerate(ASSET_NAMES):
             weights[asset] += tsmom_w.iloc[i]
-    
+            
     if mr_signal.sum() > 0:
         mr_w = (mr_signal / mr_signal.sum()) * alloc['mr']
         for i, asset in enumerate(ASSET_NAMES):
             weights[asset] += mr_w.iloc[i]
-    
+            
     total_exposure = sum(weights.values())
     weights['CASH'] = max(0.0, 1.0 - total_exposure - alloc['funding'])
     
     return weights, regime, drawdown
 
 # ==========================================
-# 3. SALVA RISULTATI
+# 4. SALVA RISULTATI
 # ==========================================
 def save_results(weights, regime, drawdown):
     """Salva i risultati nel CSV"""
@@ -165,8 +221,23 @@ def save_results(weights, regime, drawdown):
 # ==========================================
 if __name__ == "__main__":
     try:
-        close_data = fetch_data()
-        weights, regime, drawdown = calculate_weights(close_data)
+        # 1. Scarica dati daily
+        close_daily = fetch_daily_data()
+        
+        # 2. Scarica dati hourly per ogni asset
+        print("📥 Download dati hourly da Kraken (per Regime Detector)...")
+        close_hourly_dict = {}
+        for symbol in ASSETS:
+            try:
+                close_hourly_dict[symbol.replace('/', '')] = fetch_hourly_data(symbol)
+                print(f"   ✅ Scaricati hourly per {symbol}")
+            except Exception as e:
+                print(f"   ❌ Errore hourly per {symbol}: {e}")
+                
+        # 3. Calcola pesi
+        weights, regime, drawdown = calculate_weights(close_daily, close_hourly_dict)
+        
+        # 4. Salva
         save_results(weights, regime, drawdown)
         print("\n✅ Paper trading tracker completato!")
     except Exception as e:
