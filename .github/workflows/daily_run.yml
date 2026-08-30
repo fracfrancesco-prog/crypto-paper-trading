@@ -2,45 +2,44 @@ name: Daily Paper Trading
 
 on:
   schedule:
-    - cron: '5 0 * * *'  # Esegue ogni giorno alle 00:05 UTC
-  workflow_dispatch:  # Permette esecuzione manuale
+    - cron: '5 0 * * *'  # Ogni giorno alle 00:05 UTC
+  workflow_dispatch:      # Esecuzione manuale
 
 jobs:
   track:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Scarica tutta la storia Git
-      
+          fetch-depth: 0
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      
+
       - name: Run Paper Trading
         run: python paper_trading.py
-      
+
       - name: Configure Git
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-      
+
       - name: Pull latest changes
-        run: |
-          git pull origin main --rebase || true
+        run: git pull origin main --rebase || true
         continue-on-error: true
-      
-      - name: Commit and push results
+
+      - name: Commit and push
         run: |
           git add paper_trading_log.csv
           if ! git diff --staged --quiet; then
